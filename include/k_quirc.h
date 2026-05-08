@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Limits on the maximum size of QR-codes and their content (Max Version 25). */
+/* Buffer limits are sized for version 25, though processing is capped lower. */
 #define K_QUIRC_MAX_BITMAP 1712  /* ceil(117*117/8) for version 25 */
 #define K_QUIRC_MAX_PAYLOAD 2560 /* v25 ECC-L numeric max: 2149 chars */
 

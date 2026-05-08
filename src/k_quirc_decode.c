@@ -772,7 +772,7 @@ k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
 
   data->version = (code->size - 17) / 4;
 
-  if (data->version < 1 || data->version > QUIRC_MAX_VERSION) {
+  if (data->version < 1 || data->version > K_QUIRC_MAX_PROCESS_VERSION) {
     return K_QUIRC_ERROR_INVALID_VERSION;
   }
 
@@ -798,7 +798,7 @@ k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
 void quirc_extract_internal(const struct k_quirc *q, int index,
                             struct quirc_code *code) {
   const struct quirc_grid *qr = &q->grids[index];
-  const int max_grid_size = QUIRC_MAX_VERSION * 4 + 17;
+  const int max_grid_size = K_QUIRC_MAX_PROCESS_GRID_SIZE;
 
   if (index < 0 || index >= q->num_grids)
     return;
