@@ -340,6 +340,185 @@ static inline int clamp_threshold(int t) {
   return (t < 0) ? 0 : (t > 255) ? 255 : t;
 }
 
+#ifdef K_QUIRC_BILINEAR_THRESHOLD
+static void threshold_bilinear_rows(quirc_pixel_t *pixels, int w,
+                                    uint8_t xor_mask, int tl_fp, int tr_fp,
+                                    int dl_fp, int dr_fp, int inv_w_dim,
+                                    int y_start, int y_end) {
+  for (int y = y_start; y < y_end; y++) {
+    int t_left_fp = tl_fp + y * dl_fp;
+    int t_right_fp = tr_fp + y * dr_fp;
+    int delta = t_right_fp - t_left_fp;
+    int dt_fp = delta / inv_w_dim;
+    int rem = delta - dt_fp * inv_w_dim;
+    int abs_rem = (rem >= 0) ? rem : -rem;
+    int step_corr = (rem >= 0) ? 1 : -1;
+    int error = 0;
+    int t_fp = t_left_fp;
+    quirc_pixel_t *row = pixels + y * w;
+
+    for (int x = 0; x < w; x++) {
+      int t = t_fp >> 16;
+      row[x] =
+          ((row[x] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+      t_fp += dt_fp;
+      error += abs_rem;
+      if (error >= inv_w_dim) {
+        t_fp += step_corr;
+        error -= inv_w_dim;
+      }
+    }
+  }
+}
+#else
+static void threshold_global_range(quirc_pixel_t *pixels, uint8_t xor_mask,
+                                   uint8_t t, uint32_t start, uint32_t end) {
+  for (uint32_t i = start; i < end; i++)
+    pixels[i] =
+        ((pixels[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+}
+#endif /* K_QUIRC_BILINEAR_THRESHOLD */
+
+#ifdef K_QUIRC_DUAL_CORE
+/* Optional second-core dispatch: caller (e.g. MaixPy K210 port) provides a
+ * volatile dual_func pointer that core 1 polls and clears on completion. */
+typedef int (*dual_func_t)(int);
+extern volatile dual_func_t dual_func;
+
+enum {
+  K_QUIRC_DUAL_IDLE = 0,
+  K_QUIRC_DUAL_PENDING,
+  K_QUIRC_DUAL_RUNNING,
+  K_QUIRC_DUAL_DONE,
+  K_QUIRC_DUAL_CANCELED,
+};
+
+#ifndef K_QUIRC_DUAL_PENDING_SPINS
+#define K_QUIRC_DUAL_PENDING_SPINS 100000U
+#endif
+
+static volatile int g_thr_dual_state;
+
+static inline void dual_fence(void) {
+#if defined(__GNUC__) || defined(__clang__)
+  __sync_synchronize();
+#endif
+}
+
+static bool dual_try_start(dual_func_t func) {
+  dual_func_t expected = NULL;
+
+  if (g_thr_dual_state == K_QUIRC_DUAL_CANCELED && dual_func == NULL)
+    g_thr_dual_state = K_QUIRC_DUAL_IDLE;
+
+  if (g_thr_dual_state != K_QUIRC_DUAL_IDLE)
+    return false;
+
+  g_thr_dual_state = K_QUIRC_DUAL_PENDING;
+  dual_fence();
+
+#if defined(__GNUC__) || defined(__clang__)
+  if (__sync_bool_compare_and_swap(&dual_func, expected, func))
+    return true;
+#else
+  if (dual_func == NULL) {
+    dual_func = func;
+    return true;
+  }
+#endif
+
+  g_thr_dual_state = K_QUIRC_DUAL_IDLE;
+  return false;
+}
+
+static bool dual_worker_claim(void) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __sync_bool_compare_and_swap(&g_thr_dual_state, K_QUIRC_DUAL_PENDING,
+                                      K_QUIRC_DUAL_RUNNING);
+#else
+  if (g_thr_dual_state != K_QUIRC_DUAL_PENDING)
+    return false;
+  g_thr_dual_state = K_QUIRC_DUAL_RUNNING;
+  return true;
+#endif
+}
+
+static void dual_worker_done(void) {
+  dual_fence();
+  g_thr_dual_state = K_QUIRC_DUAL_DONE;
+}
+
+static bool dual_wait_done(void) {
+  uint32_t pending_spins = 0;
+
+  for (;;) {
+    int state = g_thr_dual_state;
+
+    if (state == K_QUIRC_DUAL_DONE) {
+      dual_fence();
+      g_thr_dual_state = K_QUIRC_DUAL_IDLE;
+      return true;
+    }
+
+    if (state == K_QUIRC_DUAL_PENDING &&
+        ++pending_spins >= K_QUIRC_DUAL_PENDING_SPINS) {
+      /* Core 1 has not claimed the job, so this half can be run locally. */
+#if defined(__GNUC__) || defined(__clang__)
+      if (__sync_bool_compare_and_swap(&g_thr_dual_state, K_QUIRC_DUAL_PENDING,
+                                       K_QUIRC_DUAL_CANCELED)) {
+        dual_fence();
+        return false;
+      }
+#else
+      g_thr_dual_state = K_QUIRC_DUAL_CANCELED;
+      dual_fence();
+      return false;
+#endif
+    }
+  }
+}
+
+static quirc_pixel_t *g_thr_pixels;
+static uint8_t g_thr_xor;
+#ifndef K_QUIRC_BILINEAR_THRESHOLD
+static uint32_t g_thr_lin_start;
+static uint32_t g_thr_lin_end;
+static uint8_t g_thr_lin_t;
+
+static int threshold_global_core1(int core) {
+  (void)core;
+  if (!dual_worker_claim())
+    return 0;
+  threshold_global_range(g_thr_pixels, g_thr_xor, g_thr_lin_t, g_thr_lin_start,
+                         g_thr_lin_end);
+  dual_worker_done();
+  return 0;
+}
+#endif /* !K_QUIRC_BILINEAR_THRESHOLD */
+
+#ifdef K_QUIRC_BILINEAR_THRESHOLD
+static int g_thr_w;
+static int g_thr_y_start;
+static int g_thr_y_end;
+static int g_thr_tl_fp;
+static int g_thr_tr_fp;
+static int g_thr_dl_fp;
+static int g_thr_dr_fp;
+static int g_thr_inv_w_dim;
+
+static int threshold_bilinear_core1(int core) {
+  (void)core;
+  if (!dual_worker_claim())
+    return 0;
+  threshold_bilinear_rows(g_thr_pixels, g_thr_w, g_thr_xor, g_thr_tl_fp,
+                          g_thr_tr_fp, g_thr_dl_fp, g_thr_dr_fp,
+                          g_thr_inv_w_dim, g_thr_y_start, g_thr_y_end);
+  dual_worker_done();
+  return 0;
+}
+#endif /* K_QUIRC_BILINEAR_THRESHOLD */
+#endif /* K_QUIRC_DUAL_CORE */
+
 HOT_FUNC
 static void threshold(struct k_quirc *q, bool inverted) {
   int w = q->w;
@@ -405,31 +584,32 @@ static void threshold(struct k_quirc *q, bool inverted) {
 
   int inv_w_dim = (w > 1) ? w - 1 : 1;
 
-  for (int y = 0; y < h; y++) {
-    int t_left_fp = tl_fp + y * dl_fp;
-    int t_right_fp = tr_fp + y * dr_fp;
-    int delta = t_right_fp - t_left_fp;
-    int dt_fp = delta / inv_w_dim;
-    int rem = delta - dt_fp * inv_w_dim;
-    int abs_rem = (rem >= 0) ? rem : -rem;
-    int step_corr = (rem >= 0) ? 1 : -1;
-    int error = 0;
-    int t_fp = t_left_fp;
+#ifdef K_QUIRC_DUAL_CORE
+  bool dual_started = false;
+  g_thr_pixels = pixels;
+  g_thr_xor = xor_mask;
+  g_thr_w = w;
+  g_thr_y_start = h / 2;
+  g_thr_y_end = h;
+  g_thr_tl_fp = tl_fp;
+  g_thr_tr_fp = tr_fp;
+  g_thr_dl_fp = dl_fp;
+  g_thr_dr_fp = dr_fp;
+  g_thr_inv_w_dim = inv_w_dim;
+  dual_started = dual_try_start(threshold_bilinear_core1);
+  int y_end = dual_started ? h / 2 : h;
+#else
+  int y_end = h;
+#endif
 
-    quirc_pixel_t *row = pixels + y * w;
+  threshold_bilinear_rows(pixels, w, xor_mask, tl_fp, tr_fp, dl_fp, dr_fp,
+                          inv_w_dim, 0, y_end);
 
-    for (int x = 0; x < w; x++) {
-      int t = t_fp >> 16;
-      row[x] =
-          ((row[x] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
-      t_fp += dt_fp;
-      error += abs_rem;
-      if (error >= inv_w_dim) {
-        t_fp += step_corr;
-        error -= inv_w_dim;
-      }
-    }
-  }
+#ifdef K_QUIRC_DUAL_CORE
+  if (dual_started && !dual_wait_done())
+    threshold_bilinear_rows(pixels, w, xor_mask, tl_fp, tr_fp, dl_fp, dr_fp,
+                            inv_w_dim, h / 2, h);
+#endif
 
 #else /* !K_QUIRC_BILINEAR_THRESHOLD */
   int margin_x = (int)(w * K_QUIRC_THRESHOLD_MARGIN);
@@ -457,9 +637,25 @@ static void threshold(struct k_quirc *q, bool inverted) {
 #endif
 
   int total_pixels = w * h;
-  for (int i = 0; i < total_pixels; i++)
-    pixels[i] =
-        ((pixels[i] ^ xor_mask) < t) ? QUIRC_PIXEL_BLACK : QUIRC_PIXEL_WHITE;
+#ifdef K_QUIRC_DUAL_CORE
+  bool dual_started = false;
+  uint32_t lin_half = (uint32_t)total_pixels / 2;
+  g_thr_pixels = pixels;
+  g_thr_xor = xor_mask;
+  g_thr_lin_t = t;
+  g_thr_lin_start = lin_half;
+  g_thr_lin_end = (uint32_t)total_pixels;
+  dual_started = dual_try_start(threshold_global_core1);
+  uint32_t lin_end = dual_started ? lin_half : (uint32_t)total_pixels;
+#else
+  uint32_t lin_end = (uint32_t)total_pixels;
+#endif
+  threshold_global_range(pixels, xor_mask, t, 0, lin_end);
+#ifdef K_QUIRC_DUAL_CORE
+  if (dual_started && !dual_wait_done())
+    threshold_global_range(pixels, xor_mask, t, lin_half,
+                           (uint32_t)total_pixels);
+#endif
 #endif /* K_QUIRC_BILINEAR_THRESHOLD */
 }
 
