@@ -21,4 +21,13 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_BILINEAR_THRESHOLD)
 
 # Uncomment to enable QR debug visualization mode
 # This shows the thresholded pixel buffer with timing pattern overlays
-# target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_DEBUG)
+target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_DEBUG)
+
+# Styled wallet QRs often use rounded/dot modules. Sampling only the exact
+# module center is fragile at high QR versions, so use a center-weighted
+# neighborhood when extracting the QR grid.
+target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_SOFT_CELL_SAMPLE)
+
+# Circular finder patterns can make the initial grid-size estimate drift by
+# several QR versions. Retry legal QR versions from the same finder anchors.
+target_compile_definitions(${COMPONENT_LIB} PUBLIC K_QUIRC_GRID_SIZE_RETRY)

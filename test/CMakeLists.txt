@@ -36,12 +36,18 @@ target_include_directories(k_quirc_api_test PRIVATE
 target_compile_definitions(k_quirc_test PRIVATE
     K_QUIRC_ADAPTIVE_THRESHOLD
     K_QUIRC_BILINEAR_THRESHOLD
+    K_QUIRC_DEBUG
+    K_QUIRC_SOFT_CELL_SAMPLE
+    K_QUIRC_GRID_SIZE_RETRY
     SAMPLES_DIR="${SAMPLES_DIR}"
 )
 
 target_compile_definitions(k_quirc_api_test PRIVATE
     K_QUIRC_ADAPTIVE_THRESHOLD
     K_QUIRC_BILINEAR_THRESHOLD
+    K_QUIRC_DEBUG
+    K_QUIRC_SOFT_CELL_SAMPLE
+    K_QUIRC_GRID_SIZE_RETRY
 )
 
 target_compile_options(k_quirc_test PRIVATE -Wall -Wextra -Wno-unused-function -O2)

@@ -305,6 +305,52 @@ static inline int grid_bit(const struct quirc_code *code, int x, int y) {
   return (code->cell_bitmap[p >> 3] >> (p & 7)) & 1;
 }
 
+static inline void set_grid_bit(struct quirc_code *code, int x, int y,
+                                int value) {
+  int p = y * code->size + x;
+  uint8_t mask = (uint8_t)(1 << (p & 7));
+  if (value)
+    code->cell_bitmap[p >> 3] |= mask;
+  else
+    code->cell_bitmap[p >> 3] &= (uint8_t)~mask;
+}
+
+void quirc_flip_internal(struct quirc_code *code) {
+  if (!code || code->size <= 0)
+    return;
+
+  for (int y = 0; y < code->size; y++) {
+    for (int x = 0; x < y; x++) {
+      int a = grid_bit(code, x, y);
+      int b = grid_bit(code, y, x);
+      set_grid_bit(code, x, y, b);
+      set_grid_bit(code, y, x, a);
+    }
+  }
+}
+
+#ifdef K_QUIRC_SOFT_CELL_SAMPLE
+static inline int quirc_pixel_is_black(const struct k_quirc *q, int x, int y) {
+  if (x < 0 || y < 0 || x >= q->w || y >= q->h)
+    return 0;
+  return q->pixels[y * q->w + x] != QUIRC_PIXEL_WHITE;
+}
+
+static int sample_grid_cell_soft(const struct k_quirc *q,
+                                 const struct quirc_grid *qr, int x, int y) {
+  struct quirc_point p;
+  perspective_map(qr->c, x + 0.5f, y + 0.5f, &p);
+
+  int score = quirc_pixel_is_black(q, p.x, p.y) ? 4 : 0;
+  score += quirc_pixel_is_black(q, p.x - 1, p.y);
+  score += quirc_pixel_is_black(q, p.x + 1, p.y);
+  score += quirc_pixel_is_black(q, p.x, p.y - 1);
+  score += quirc_pixel_is_black(q, p.x, p.y + 1);
+
+  return score >= 3;
+}
+#endif
+
 static k_quirc_error_t read_format(const struct quirc_code *code,
                                    struct quirc_data *data, int which) {
   uint16_t format = 0;
@@ -820,6 +866,10 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
   int i = 0;
   for (int y = 0; y < qr->grid_size; y++) {
     for (int x = 0; x < qr->grid_size; x++) {
+#ifdef K_QUIRC_SOFT_CELL_SAMPLE
+      if (sample_grid_cell_soft(q, qr, x, y))
+        code->cell_bitmap[i >> 3] |= (1 << (i & 7));
+#else
       struct quirc_point p;
 
       perspective_map(qr->c, x + 0.5f, y + 0.5f, &p);
@@ -828,6 +878,7 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
         if (q->pixels[p.y * q->w + p.x])
           code->cell_bitmap[i >> 3] |= (1 << (i & 7));
       }
+#endif
 
       i++;
     }

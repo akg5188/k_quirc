@@ -929,7 +929,7 @@ static void jiggle_perspective(struct k_quirc *q, int index) {
   }
 }
 
-static int setup_qr_perspective(struct k_quirc *q, int index) {
+static int setup_qr_perspective_raw(struct k_quirc *q, int index) {
   struct quirc_grid *qr = &q->grids[index];
   float gs = (float)qr->grid_size;
 
@@ -955,14 +955,40 @@ static int setup_qr_perspective(struct k_quirc *q, int index) {
   if (!perspective_setup_direct(qr->c, img, mod))
     return 0;
 
+  return 1;
+}
+
+static int setup_qr_perspective_ex(struct k_quirc *q, int index,
+                                   bool update_adaptive_threshold) {
+  if (!setup_qr_perspective_raw(q, index))
+    return 0;
+
+  struct quirc_grid *qr = &q->grids[index];
+
   jiggle_perspective(q, index);
 
 #ifdef K_QUIRC_ADAPTIVE_THRESHOLD
   qr->timing_bias = timing_bias(q, index);
-  if (!q->processing_inverted)
+  if (update_adaptive_threshold && !q->processing_inverted)
     update_threshold_offset(q, qr->timing_bias);
 #endif
   return 1;
+}
+
+static int setup_qr_perspective(struct k_quirc *q, int index) {
+  return setup_qr_perspective_ex(q, index, true);
+}
+
+int quirc_setup_grid_perspective_for_size(struct k_quirc *q, int index,
+                                          int grid_size) {
+  if (!q || index < 0 || index >= q->num_grids)
+    return 0;
+  if (grid_size < 21 || grid_size > QUIRC_MAX_VERSION * 4 + 17 ||
+      ((grid_size - 17) % 4) != 0)
+    return 0;
+
+  q->grids[index].grid_size = grid_size;
+  return setup_qr_perspective_ex(q, index, false);
 }
 
 static float length(struct quirc_point a, struct quirc_point b) {

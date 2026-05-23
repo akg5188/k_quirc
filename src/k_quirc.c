@@ -143,6 +143,26 @@ void k_quirc_end(k_quirc_t *q, bool find_inverted) {
 
 int k_quirc_count(const k_quirc_t *q) { return q ? q->num_grids : 0; }
 
+static void populate_result_from_decode(const struct quirc_code *code,
+                                        const struct quirc_data *data,
+                                        k_quirc_result_t *result) {
+  result->valid = true;
+  for (int i = 0; i < 4; i++) {
+    result->corners[i].x = code->corners[i].x;
+    result->corners[i].y = code->corners[i].y;
+  }
+  result->data.version = data->version;
+  result->data.ecc_level = data->ecc_level;
+  result->data.mask = data->mask;
+  result->data.data_type = data->data_type;
+  result->data.payload_len = data->payload_len;
+  if (result->data.payload_len >= K_QUIRC_MAX_PAYLOAD)
+    result->data.payload_len = K_QUIRC_MAX_PAYLOAD - 1;
+  result->data.eci = data->eci;
+  memcpy(result->data.payload, data->payload, result->data.payload_len);
+  result->data.payload[result->data.payload_len] = 0;
+}
+
 k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
                                k_quirc_result_t *result) {
   if (!result)
@@ -156,27 +176,67 @@ k_quirc_error_t k_quirc_decode(k_quirc_t *q, int index,
   struct quirc_code *code = &q->code_scratch;
   struct quirc_data *data = &q->data_scratch;
   struct datastream *ds = &q->ds_scratch;
-
   quirc_extract_internal(q, index, code);
 
   k_quirc_error_t err = quirc_decode_internal(code, data, ds);
   if (err == K_QUIRC_SUCCESS) {
-    result->valid = true;
-    for (int i = 0; i < 4; i++) {
-      result->corners[i].x = code->corners[i].x;
-      result->corners[i].y = code->corners[i].y;
-    }
-    result->data.version = data->version;
-    result->data.ecc_level = data->ecc_level;
-    result->data.mask = data->mask;
-    result->data.data_type = data->data_type;
-    result->data.payload_len = data->payload_len;
-    if (result->data.payload_len >= K_QUIRC_MAX_PAYLOAD)
-      result->data.payload_len = K_QUIRC_MAX_PAYLOAD - 1;
-    result->data.eci = data->eci;
-    memcpy(result->data.payload, data->payload, result->data.payload_len);
-    result->data.payload[result->data.payload_len] = 0;
+    populate_result_from_decode(code, data, result);
+    return err;
   }
+
+  quirc_flip_internal(code);
+  k_quirc_error_t flip_err = quirc_decode_internal(code, data, ds);
+  if (flip_err == K_QUIRC_SUCCESS) {
+    populate_result_from_decode(code, data, result);
+    return flip_err;
+  }
+
+#ifdef K_QUIRC_GRID_SIZE_RETRY
+  struct quirc_grid *grid = &q->grids[index];
+  int original_grid_size = grid->grid_size;
+  float original_c[QUIRC_PERSPECTIVE_PARAMS];
+  int original_timing_bias = grid->timing_bias;
+  memcpy(original_c, grid->c, sizeof(original_c));
+
+  int original_version = (original_grid_size - 17) / 4;
+  if (original_version < 1 || original_version > QUIRC_MAX_VERSION)
+    original_version = QUIRC_MAX_VERSION / 2;
+
+  for (int delta = 0; delta < QUIRC_MAX_VERSION; delta++) {
+    int versions[2] = {original_version - delta, original_version + delta};
+    int count = delta == 0 ? 1 : 2;
+
+    for (int vi = 0; vi < count; vi++) {
+      int version = versions[vi];
+      if (version < 1 || version > QUIRC_MAX_VERSION)
+        continue;
+
+      int grid_size = version * 4 + 17;
+      if (grid_size == original_grid_size)
+        continue;
+      if (!quirc_setup_grid_perspective_for_size(q, index, grid_size))
+        continue;
+
+      quirc_extract_internal(q, index, code);
+      k_quirc_error_t retry_err = quirc_decode_internal(code, data, ds);
+      if (retry_err == K_QUIRC_SUCCESS) {
+        populate_result_from_decode(code, data, result);
+        return retry_err;
+      }
+
+      quirc_flip_internal(code);
+      retry_err = quirc_decode_internal(code, data, ds);
+      if (retry_err == K_QUIRC_SUCCESS) {
+        populate_result_from_decode(code, data, result);
+        return retry_err;
+      }
+    }
+  }
+
+  grid->grid_size = original_grid_size;
+  memcpy(grid->c, original_c, sizeof(original_c));
+  grid->timing_bias = original_timing_bias;
+#endif
 
   return err;
 }

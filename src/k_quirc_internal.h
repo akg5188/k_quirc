@@ -67,7 +67,7 @@ static inline void *k_malloc_fast(size_t size) {
 #define QUIRC_MAX_CAPSTONES 32
 #define QUIRC_MAX_GRIDS 8
 #define QUIRC_PERSPECTIVE_PARAMS 8
-#define QUIRC_MAX_VERSION 25
+#define QUIRC_MAX_VERSION 40
 #define QUIRC_MAX_ALIGNMENT 7
 #define QUIRC_FLOOD_FILL_STACK 8192
 #define K_QUIRC_MAX_IMAGE_DIM 1280
@@ -211,5 +211,8 @@ void quirc_extract_internal(const struct k_quirc *q, int index,
 k_quirc_error_t quirc_decode_internal(const struct quirc_code *code,
                                       struct quirc_data *data,
                                       struct datastream *ds);
+void quirc_flip_internal(struct quirc_code *code);
+int quirc_setup_grid_perspective_for_size(struct k_quirc *q, int index,
+                                          int grid_size);
 
 #endif /* K_QUIRC_INTERNAL_H */

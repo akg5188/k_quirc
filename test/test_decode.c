@@ -173,6 +173,7 @@ int main(int argc, char **argv) {
     samples_dir = argv[1];
 
   int hex_output = (getenv("K_QUIRC_HEX_OUTPUT") != NULL);
+  int verbose_caps = (getenv("K_QUIRC_VERBOSE_CAPS") != NULL);
 
   DIR *dir = opendir(samples_dir);
   if (!dir) {
@@ -313,8 +314,8 @@ int main(int argc, char **argv) {
       if (grids == 0 && q->num_capstones >= 3)
         dump_grouping_diag(q);
 
-      /* Show capstone positions for ECC failures with extra caps */
-      if (grids > 0 && caps > 3) {
+      /* Show capstone positions for difficult samples. */
+      if (grids > 0 && (caps > 3 || verbose_caps)) {
         printf("    All capstone centers:");
         for (int c = 0; c < caps; c++)
           printf(" [%d]=(%d,%d)", c, q->capstones[c].center.x,
